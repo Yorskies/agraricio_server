@@ -81,7 +81,7 @@ python esp32_simulator.py
 ---
 
 ## 👤 Developer
-- **Name**: Martin Nonitehe Lase
+- **Name**: Anri Anugerah Marpaung
 - **University**: Universitas Sumatera Utara (USU)
 - **Project Year**: 2026
 
