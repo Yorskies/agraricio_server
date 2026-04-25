@@ -1,126 +1,106 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include "DHT.h"
-#include <MHZ19.h>
 
-// ==========================================
-// 1. KONFIGURASI WIFI & MQTT
-// ==========================================
-const char* ssid        = "Anri";
-const char* password    = "12345678";
-const char* mqtt_server = "192.168.18.82"; // IP Server Python Anda
+// --- KONFIGURASI WIFI & MQTT ---
+const char* ssid        = "RumahKecil";
+const char* password    = "marpaung57";
+const char* mqtt_server = "168.144.136.41"; // IP VPS Anda
 const int   mqtt_port   = 1883;
 
-// Topik MQTT (Harus sama dengan config.py di server)
-const char* TOPIC_SENSOR   = "agraric/kumbung1/sensors";
-const char* TOPIC_AKTUATOR = "agraric/kumbung1/actuators";
+// --- IDENTITAS PERANGKAT ---
+const char* clientID      = "ESP32_Kumbung_01";
+const char* topic_sensor  = "agraric/kumbung1/sensors";
+const char* topic_control = "agraric/kumbung1/actuators";
 
-// ==========================================
-// 2. PIN HARDWARE & SENSOR
-// ==========================================
-#define DHTPIN 4
-#define DHTTYPE DHT22
-DHT dht(DHTPIN, DHTTYPE);
-
-#define RX_PIN 16 
-#define TX_PIN 17 
-MHZ19 myMHZ19;
-
-// Aktuator
-const int PIN_FAN    = 18; // Mosfet Kipas (12V)
-const int PIN_MIST   = 19; // Mosfet Mist Maker (5V)
-const int PIN_HEATER = 25; // Relay Lampu Pijar (Ch 1)
-
-// Konfigurasi PWM (ESP32 Core 3.0+)
-const int pwmFreq = 1000;
-const int pwmRes  = 8;
-
-// Timing
-unsigned long lastMsg = 0;
+// --- PIN ACTUATOR (Sesuaikan dengan wiring Anda) ---
+const int PIN_KIPAS  = 18; // PWM
+const int PIN_MIST   = 19; // Relay
+const int PIN_HEATER = 21; // Relay
+const int PIN_POMPA  = 22; // Relay
 
 WiFiClient espClient;
 PubSubClient client(espClient);
+unsigned long lastMsg = 0;
 
-// ==========================================
-// 3. FUNGSI KONEKSI
-// ==========================================
 void setup_wifi() {
   delay(10);
-  Serial.print("\nConnecting to "); Serial.println(ssid);
+  Serial.println("\nConnecting to WiFi...");
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500); Serial.print(".");
+    delay(500);
+    Serial.print(".");
   }
-  Serial.println("\nWiFi connected. IP: "); Serial.println(WiFi.localIP());
+  Serial.println("\nWiFi Connected! IP: " + WiFi.localIP().toString());
+}
+
+// FUNGSI MENERIMA PERINTAH DARI VPS
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Instruksi masuk [");
+  Serial.print(topic);
+  Serial.print("]: ");
+  
+  StaticJsonDocument<256> doc;
+  deserializeJson(doc, payload, length);
+
+  // Parsing Kontrol dari Server
+  if (doc.containsKey("kipas_pwm")) {
+    int pwmValue = doc["kipas_pwm"];
+    analogWrite(PIN_KIPAS, pwmValue);
+    Serial.printf("Kipas -> %d | ", pwmValue);
+  }
+  
+  if (doc.containsKey("mist_maker")) {
+    const char* mistStatus = doc["mist_maker"];
+    digitalWrite(PIN_MIST, (strcmp(mistStatus, "ON") == 0) ? LOW : HIGH); // LOW aktif jika pakai Relay Module
+    Serial.printf("Mist -> %s | ", mistStatus);
+  }
+
+  if (doc.containsKey("heater")) {
+    const char* heaterStatus = doc["heater"];
+    digitalWrite(PIN_HEATER, (strcmp(heaterStatus, "ON") == 0) ? LOW : HIGH);
+    Serial.printf("Heater -> %s\n", heaterStatus);
+  }
 }
 
 void reconnect() {
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
-    if (client.connect("ESP32_Kumbung_Anri")) {
-      Serial.println("connected");
-      client.subscribe(TOPIC_AKTUATOR);
+    if (client.connect(clientID)) {
+      Serial.println("Connected to VPS!");
+      client.subscribe(topic_control); // Dengerin perintah dari server
     } else {
-      Serial.print("failed, rc="); Serial.print(client.state());
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
       delay(5000);
     }
   }
 }
 
-// ==========================================
-// 4. CALLBACK: TERIMA PERINTAH DARI SERVER
-// ==========================================
-void callback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived ["); Serial.print(topic); Serial.print("] ");
-  
-  StaticJsonDocument<256> doc;
-  deserializeJson(doc, payload, length);
-
-  // Ambil instruksi dari JSON server
-  int kipas_pwm      = doc["kipas_pwm"];
-  const char* mist   = doc["mist_maker"];      // "ON" atau "OFF"
-  const char* heater = doc["lampu_pemanas"];   // "ON" atau "OFF"
-
-  // Eksekusi Kipas (PWM)
-  ledcWrite(PIN_FAN, kipas_pwm);
-
-  // Eksekusi Mist Maker (Sesuai main.py, ini ON/OFF via Mosfet)
-  if (String(mist) == "ON") ledcWrite(PIN_MIST, 255);
-  else ledcWrite(PIN_MIST, 0);
-
-  // Eksekusi Heater (Relay Active-LOW)
-  if (String(heater) == "ON") digitalWrite(PIN_HEATER, LOW); // ON
-  else digitalWrite(PIN_HEATER, HIGH); // OFF
-
-  Serial.printf("Execute -> Fan: %d, Mist: %s, Heater: %s\n", kipas_pwm, mist, heater);
-}
-
-// ==========================================
-// 5. SETUP & LOOP
-// ==========================================
 void setup() {
   Serial.begin(115200);
-  
-  // Setup Sensor
-  dht.begin();
-  Serial2.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
-  myMHZ19.begin(Serial2);
-  myMHZ19.autoCalibration(false);
-
-  // Setup Aktuator
-  ledcAttach(PIN_FAN, pwmFreq, pwmRes);
-  ledcAttach(PIN_MIST, pwmFreq, pwmRes);
-  pinMode(PIN_HEATER, OUTPUT);
-  digitalWrite(PIN_HEATER, HIGH); // Mati di awal
-
   setup_wifi();
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
+
+  // Setup Pin Mode
+  pinMode(PIN_KIPAS, OUTPUT);
+  pinMode(PIN_MIST, OUTPUT);
+  pinMode(PIN_HEATER, OUTPUT);
+  pinMode(PIN_POMPA, OUTPUT);
+
+  // Matikan semua aktuator saat startup
+  digitalWrite(PIN_MIST, HIGH);
+  digitalWrite(PIN_HEATER, HIGH);
+  digitalWrite(PIN_POMPA, HIGH);
+  analogWrite(PIN_KIPAS, 0);
 }
 
 void loop() {
-  if (!client.connected()) reconnect();
+  if (!client.connected()) {
+    reconnect();
+  }
   client.loop();
 
   unsigned long now = millis();
@@ -128,23 +108,22 @@ void loop() {
   if (now - lastMsg > 5000) {
     lastMsg = now;
 
-    float t = dht.readTemperature();
-    float h = dht.readHumidity();
-    int co2 = myMHZ19.getCO2();
+    // SIMULASI PEMBACAAN SENSOR (Ganti dengan fungsi sensor asli Anda: dht.read dsb)
+    float suhu = 28.0 + (random(0, 100) / 10.0);
+    float hum  = 80.0 + (random(0, 100) / 10.0);
+    int co2    = 400 + random(0, 1000);
 
-    if (!isnan(t) && !isnan(h)) {
-      StaticJsonDocument<256> doc;
-      doc["suhu"]             = t;
-      doc["kelembapan_udara"] = h;
-      doc["kelembapan_media"] = 0;   // Placeholder (Sensor dicopot)
-      doc["kadar_co2"]        = co2;
-      doc["kadar_ph"]         = 0.0; // Placeholder (Sensor dicopot)
+    // Bungkus ke JSON
+    StaticJsonDocument<200> doc;
+    doc["suhu"] = suhu;
+    doc["kelembapan_udara"] = hum;
+    doc["kadar_co2"] = co2;
 
-      char buffer[256];
-      serializeJson(doc, buffer);
-      client.publish(TOPIC_SENSOR, buffer);
-      
-      Serial.print("Sent to Server: "); Serial.println(buffer);
-    }
+    char buffer[256];
+    serializeJson(doc, buffer);
+
+    // Kirim ke VPS
+    client.publish(topic_sensor, buffer);
+    Serial.println("Data Terkirim: " + String(buffer));
   }
 }

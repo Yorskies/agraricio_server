@@ -145,3 +145,32 @@ def get_control():
         "status": "success",
         "state": SYSTEM_STATE
     }), 200
+
+@app.route('/api/sensors/latest', methods=['GET'])
+def get_latest_data():
+    try:
+        # Mengambil data terbaru dari database
+        cursor.execute("SELECT * FROM tb_sensor ORDER BY id DESC LIMIT 1")
+        sensor = cursor.fetchone()
+        
+        # Mengambil status aktuator terakhir (untuk sinkronisasi UI)
+        cursor.execute("SELECT * FROM tb_aktuator ORDER BY id DESC LIMIT 1")
+        aktuator = cursor.fetchone()
+
+        if sensor:
+            return jsonify({
+                "status": "success",
+                "data": {
+                    "suhu": sensor['suhu'],
+                    "kelembapan_udara": sensor['kelembapan_udara'],
+                    "kadar_co2": sensor['kadar_co2'],
+                    "kipas_pwm": aktuator['kipas_exhaust'] if aktuator else 0,
+                    "mist_maker": aktuator['mist_maker'] if aktuator else "OFF",
+                    "heater": aktuator['lampu_pemanas'] if aktuator else "OFF",
+                    "mode": SYSTEM_STATE["mode"] # Mengambil mode aktif dari RAM server
+                }
+            }), 200
+        else:
+            return jsonify({"status": "error", "message": "No data found"}), 404
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
