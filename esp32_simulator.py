@@ -25,16 +25,12 @@ class SimulatorESP32_GUI:
         # Variabel untuk Slider
         self.suhu_var = tk.DoubleVar(value=24.5)
         self.kel_udara_var = tk.DoubleVar(value=85.0)
-        self.kel_media_var = tk.DoubleVar(value=65.0)
         self.co2_var = tk.IntVar(value=800)
-        self.ph_var = tk.DoubleVar(value=7.0)
 
         # Membuat Slider UI
         self._buat_slider("Suhu Udara (°C)", self.suhu_var, 0, 50)
         self._buat_slider("Kelembapan Udara (%)", self.kel_udara_var, 0, 100)
-        self._buat_slider("Kelembapan Media (%)", self.kel_media_var, 0, 100)
         self._buat_slider("Kadar CO2 (PPM)", self.co2_var, 400, 2000)
-        self._buat_slider("pH Media", self.ph_var, 0, 14)
 
         # ================= SETUP UI (TOMBOL & LOG) =================
         self.btn_toggle = ttk.Button(root, text="▶ MULAI SIMULASI", command=self.toggle_simulasi)
@@ -117,9 +113,7 @@ class SimulatorESP32_GUI:
             payload = {
                 "suhu": round(self.suhu_var.get(), 1),
                 "kelembapan_udara": round(self.kel_udara_var.get(), 1),
-                "kelembapan_media": round(self.kel_media_var.get(), 1),
-                "kadar_co2": int(self.co2_var.get()),
-                "kadar_ph": round(self.ph_var.get(), 1)
+                "kadar_co2": int(self.co2_var.get())
             }
             
             pesan_json = json.dumps(payload)

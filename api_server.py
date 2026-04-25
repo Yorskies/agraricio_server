@@ -1,12 +1,32 @@
-from flask import Flask, jsonify
+# api_server.py
+# Modul Flask REST API untuk Aplikasi Monitoring Agraric.io
+# Diimpor dan dijalankan oleh main.py
+
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-# Nanti Anda bisa meng-import modul database Anda di sini
-# import database 
+from database import ambil_data_statistik
 
 app = Flask(__name__)
-CORS(app) # Mengizinkan akses dari IP mana saja (HP Samsung Anda)
+CORS(app)  # Mengizinkan akses dari IP mana saja (HP Samsung / Flutter App)
 
+# ========================================================
+# GLOBAL STATE: Menyimpan Mode Operasi & Nilai Override
+# Diakses oleh Flask (main thread) & MQTT (background thread)
+# ========================================================
+SYSTEM_STATE = {
+    "mode": "AUTO",             # Opsi: AUTO, SIMULASI_SENSOR, MANUAL_AKTUATOR
+    "manual_kipas": 0,          # PWM 0-255 (untuk mode MANUAL)
+    "manual_mist": "OFF",       # ON/OFF    (untuk mode MANUAL)
+    "manual_heater": "OFF",     # ON/OFF    (untuk mode MANUAL)
+    "sim_suhu": 32.0,           # °C        (untuk mode SIMULASI)
+    "sim_kel": 85.0,            # %         (untuk mode SIMULASI)
+    "sim_co2": 800              # PPM       (untuk mode SIMULASI)
+}
+
+# ========================================================
+# ENDPOINT: ROOT / HEALTH CHECK
+# ========================================================
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({"message": "Agraric.io REST API Server Berjalan Sempurna!"}), 200
@@ -17,51 +37,111 @@ def index():
 @app.route('/api/analytics', methods=['GET'])
 def get_analytics():
     try:
-        # ----------------------------------------------------
-        # TUGAS BERIKUTNYA UNTUK ANDA:
-        # Ganti data statis di bawah ini dengan hasil query (SELECT)
-        # dari database MySQL Anda melalui fungsi di database.py.
-        # Contoh: data_mentah = database.ambil_data_mingguan()
-        # ----------------------------------------------------
-        
+        # Ambil data langsung dari database melalui fungsi di database.py
+        data_statistik = ambil_data_statistik()
+
+        if data_statistik is None:
+            return jsonify({
+                "status": "error",
+                "pesan": "Belum ada data sensor di database."
+            }), 404
+
         # Format JSON Standar Industri untuk Grafik Flutter
         response_data = {
             "status": "success",
-            "pesan": "Data berhasil diambil",
-            "data": {
-                "suhu": {
-                    "trend": [22.0, 24.5, 26.0, 25.5, 23.0, 24.0, 24.8], # Data 7 hari
-                    "rata_rata": 24.2,
-                    "tertinggi": 26.0,
-                    "terendah": 22.0
-                },
-                "kelembapan": {
-                    "trend": [80.0, 85.0, 82.0, 78.0, 88.0, 85.0, 84.0],
-                    "rata_rata": 83.1,
-                    "tertinggi": 88.0,
-                    "terendah": 78.0
-                },
-                "label_hari": ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]
-            }
+            "pesan": "Data berhasil diambil dari database",
+            "data": data_statistik  # Langsung dari ambil_data_statistik()
         }
         
         return jsonify(response_data), 200
         
     except Exception as e:
-        # Penanganan error yang elegan
         return jsonify({
             "status": "error", 
             "pesan": f"Gagal mengambil data dari server: {str(e)}"
         }), 500
 
+# ========================================================
+# ENDPOINT: KONTROL MODE OPERASI (POST dari Mobile App)
+# ========================================================
+@app.route('/api/control', methods=['POST'])
+def post_control():
+    """
+    Menerima JSON dari Mobile App untuk mengubah mode operasi server.
+    
+    Contoh payload per mode:
+    - AUTO:              {"mode": "AUTO"}
+    - SIMULASI_SENSOR:   {"mode": "SIMULASI_SENSOR", "sim_suhu": 35.0, "sim_kel": 90.0, "sim_co2": 1200}
+    - MANUAL_AKTUATOR:   {"mode": "MANUAL_AKTUATOR", "manual_kipas": 200, "manual_mist": "ON", "manual_heater": "OFF"}
+    """
+    try:
+        data = request.get_json()
+
+        if data is None:
+            return jsonify({
+                "status": "error",
+                "pesan": "Request body harus berupa JSON yang valid."
+            }), 400
+
+        # --- 1. Update Mode (jika ada key "mode" di request) ---
+        if "mode" in data:
+            mode_baru = data["mode"].upper()
+            mode_valid = ["AUTO", "SIMULASI_SENSOR", "MANUAL_AKTUATOR"]
+
+            if mode_baru not in mode_valid:
+                return jsonify({
+                    "status": "error",
+                    "pesan": f"Mode '{mode_baru}' tidak dikenali. Pilihan: {mode_valid}"
+                }), 400
+            
+            SYSTEM_STATE["mode"] = mode_baru
+            print(f"\n🔀 [API] Mode operasi diubah menjadi: {mode_baru}")
+
+        # --- 2. Update nilai manual aktuator (jika mode MANUAL) ---
+        if SYSTEM_STATE["mode"] == "MANUAL_AKTUATOR":
+            if "manual_kipas" in data:
+                SYSTEM_STATE["manual_kipas"] = int(data["manual_kipas"])
+            if "manual_mist" in data:
+                SYSTEM_STATE["manual_mist"] = data["manual_mist"].upper()
+            if "manual_heater" in data:
+                SYSTEM_STATE["manual_heater"] = data["manual_heater"].upper()
+            
+            print(f"   [MANUAL] Kipas: {SYSTEM_STATE['manual_kipas']} | "
+                  f"Mist: {SYSTEM_STATE['manual_mist']} | "
+                  f"Heater: {SYSTEM_STATE['manual_heater']}")
+
+        # --- 3. Update nilai simulasi sensor (jika mode SIMULASI) ---
+        if SYSTEM_STATE["mode"] == "SIMULASI_SENSOR":
+            if "sim_suhu" in data:
+                SYSTEM_STATE["sim_suhu"] = float(data["sim_suhu"])
+            if "sim_kel" in data:
+                SYSTEM_STATE["sim_kel"] = float(data["sim_kel"])
+            if "sim_co2" in data:
+                SYSTEM_STATE["sim_co2"] = int(data["sim_co2"])
+            
+            print(f"   [SIMULASI] Suhu: {SYSTEM_STATE['sim_suhu']}°C | "
+                  f"Kel: {SYSTEM_STATE['sim_kel']}% | "
+                  f"CO2: {SYSTEM_STATE['sim_co2']} ppm")
+
+        return jsonify({
+            "status": "success",
+            "pesan": f"State berhasil diperbarui (Mode: {SYSTEM_STATE['mode']})",
+            "state": SYSTEM_STATE
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "pesan": f"Gagal memproses perintah kontrol: {str(e)}"
+        }), 500
 
 # ========================================================
-# MENJALANKAN SERVER FLASK
+# ENDPOINT: CEK STATE SAAT INI (GET dari Mobile App)
 # ========================================================
-if __name__ == '__main__':
-    print("=== FLASK REST API SERVER AKTIF ===")
-    print("Mendengarkan permintaan dari Flutter...")
-    
-    # PERHATIAN: host='0.0.0.0' WAJIB digunakan agar API ini 
-    # bisa diakses oleh IP 192.168.18.42 (HP Samsung Anda)
-    app.run(host='0.0.0.0', port=5000, debug=True)
+@app.route('/api/control', methods=['GET'])
+def get_control():
+    """Mengembalikan SYSTEM_STATE saat ini tanpa mengubah apapun."""
+    return jsonify({
+        "status": "success",
+        "state": SYSTEM_STATE
+    }), 200

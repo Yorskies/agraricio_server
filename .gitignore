@@ -43,6 +43,7 @@ agraric_io/.pub-cache/
 agraric_io/build/
 agraric_io/lib/generated/
 agraric_io/pubspec.lock
+agraric_io/
 
 # IDEs
 .vscode/

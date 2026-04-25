@@ -36,6 +36,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   mqtt_client: ^10.11.9
   fl_chart: ^1.2.0
+  dio: ^5.9.2
 
 dev_dependencies:
   flutter_test:
