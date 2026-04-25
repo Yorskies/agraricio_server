@@ -4,6 +4,8 @@
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+import mysql.connector
+import config
 
 from database import ambil_data_statistik
 
@@ -148,30 +150,31 @@ def get_control():
 
 @app.route('/api/sensors/latest', methods=['GET'])
 def get_latest_data():
+    """Mengambil 1 baris data sensor & aktuator terbaru untuk dashboard realtime."""
     try:
-        # PENTING: Gunakan objek koneksi 'db' yang sudah ada di aplikasi Anda
-        # Kita buat cursor baru khusus untuk request ini
-        # dictionary=True agar hasil SELECT bisa diakses seperti sensor['suhu']
-        cur = db.cursor(dictionary=True) 
-        
-        # 1. Ambil data sensor terbaru
-        cur.execute("SELECT * FROM tb_sensor ORDER BY id DESC LIMIT 1")
-        sensor = cur.fetchone()
-        
-        # 2. Ambil status aktuator terbaru
-        cur.execute("SELECT * FROM tb_aktuator ORDER BY id DESC LIMIT 1")
-        aktuator = cur.fetchone()
+        db = mysql.connector.connect(
+            host=config.DB_HOST,
+            user=config.DB_USER,
+            password=config.DB_PASS,
+            database=config.DB_NAME
+        )
+        cursor = db.cursor(dictionary=True)
 
-        # Tutup cursor setelah digunakan
-        cur.close()
+        # 1. Ambil data sensor terbaru
+        cursor.execute("SELECT * FROM tb_sensor ORDER BY id DESC LIMIT 1")
+        sensor = cursor.fetchone()
+
+        # 2. Ambil status aktuator terbaru
+        cursor.execute("SELECT * FROM tb_aktuator ORDER BY id DESC LIMIT 1")
+        aktuator = cursor.fetchone()
 
         if sensor:
             return jsonify({
                 "status": "success",
                 "data": {
-                    "suhu": sensor['suhu'],
-                    "kelembapan_udara": sensor['kelembapan_udara'],
-                    "kadar_co2": sensor['kadar_co2'],
+                    "suhu": float(sensor['suhu']),
+                    "kelembapan_udara": float(sensor['kelembapan_udara']),
+                    "kadar_co2": int(sensor['kadar_co2']),
                     "kipas_pwm": aktuator['kipas_exhaust'] if aktuator else 0,
                     "mist_maker": aktuator['mist_maker'] if aktuator else "OFF",
                     "heater": aktuator['lampu_pemanas'] if aktuator else "OFF",
@@ -179,7 +182,14 @@ def get_latest_data():
                 }
             }), 200
         else:
-            return jsonify({"status": "error", "message": "No data found"}), 404
+            return jsonify({"status": "error", "pesan": "Belum ada data sensor di database."}), 404
 
+    except mysql.connector.Error as err:
+        return jsonify({"status": "error", "pesan": f"Database error: {str(err)}"}), 500
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error", "pesan": str(e)}), 500
+    finally:
+        if 'db' in locals() and db.is_connected():
+            if 'cursor' in locals():
+                cursor.close()
+            db.close()
