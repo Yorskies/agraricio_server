@@ -149,13 +149,21 @@ def get_control():
 @app.route('/api/sensors/latest', methods=['GET'])
 def get_latest_data():
     try:
-        # Mengambil data terbaru dari database
-        cursor.execute("SELECT * FROM tb_sensor ORDER BY id DESC LIMIT 1")
-        sensor = cursor.fetchone()
+        # PENTING: Gunakan objek koneksi 'db' yang sudah ada di aplikasi Anda
+        # Kita buat cursor baru khusus untuk request ini
+        # dictionary=True agar hasil SELECT bisa diakses seperti sensor['suhu']
+        cur = db.cursor(dictionary=True) 
         
-        # Mengambil status aktuator terakhir (untuk sinkronisasi UI)
-        cursor.execute("SELECT * FROM tb_aktuator ORDER BY id DESC LIMIT 1")
-        aktuator = cursor.fetchone()
+        # 1. Ambil data sensor terbaru
+        cur.execute("SELECT * FROM tb_sensor ORDER BY id DESC LIMIT 1")
+        sensor = cur.fetchone()
+        
+        # 2. Ambil status aktuator terbaru
+        cur.execute("SELECT * FROM tb_aktuator ORDER BY id DESC LIMIT 1")
+        aktuator = cur.fetchone()
+
+        # Tutup cursor setelah digunakan
+        cur.close()
 
         if sensor:
             return jsonify({
@@ -167,10 +175,11 @@ def get_latest_data():
                     "kipas_pwm": aktuator['kipas_exhaust'] if aktuator else 0,
                     "mist_maker": aktuator['mist_maker'] if aktuator else "OFF",
                     "heater": aktuator['lampu_pemanas'] if aktuator else "OFF",
-                    "mode": SYSTEM_STATE["mode"] # Mengambil mode aktif dari RAM server
+                    "mode": SYSTEM_STATE["mode"]
                 }
             }), 200
         else:
             return jsonify({"status": "error", "message": "No data found"}), 404
+
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
