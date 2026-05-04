@@ -1,23 +1,34 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <DHT.h>
+#include <HardwareSerial.h>
+#include <MHZ19.h>
 
 // --- KONFIGURASI WIFI & MQTT ---
-const char* ssid        = "RumahKecil";
-const char* password    = "marpaung57";
-const char* mqtt_server = "168.144.136.41"; // IP VPS Anda
+const char* ssid        = "ESP32";
+const char* password    = "12345678";
+const char* mqtt_server = "168.144.136.41"; // IP VPS
 const int   mqtt_port   = 1883;
 
-// --- IDENTITAS PERANGKAT ---
 const char* clientID      = "ESP32_Kumbung_01";
 const char* topic_sensor  = "agraric/kumbung1/sensors";
 const char* topic_control = "agraric/kumbung1/actuators";
 
-// --- PIN ACTUATOR (Sesuaikan dengan wiring Anda) ---
-const int PIN_KIPAS  = 18; // PWM
-const int PIN_MIST   = 19; // Relay
-const int PIN_HEATER = 21; // Relay
-const int PIN_POMPA  = 22; // Relay
+// --- KONFIGURASI PIN AKTUATOR ---
+const int PIN_KIPAS  = 19; // MOSFET (PWM)
+const int PIN_MIST   = 18; // MOSFET (Digital Active High)
+const int PIN_HEATER = 21; // RELAY (Digital Active Low)
+
+// --- KONFIGURASI SENSOR ---
+#define DHTPIN 4
+#define DHTTYPE DHT22
+DHT dht(DHTPIN, DHTTYPE);
+
+#define RX_PIN 16 // Hubungkan ke TX MH-Z19C
+#define TX_PIN 17 // Hubungkan ke RX MH-Z19C
+HardwareSerial mySerial(2); // Menggunakan Hardware Serial 2 milik ESP32
+MHZ19 myMHZ19;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -34,45 +45,35 @@ void setup_wifi() {
   Serial.println("\nWiFi Connected! IP: " + WiFi.localIP().toString());
 }
 
-// FUNGSI MENERIMA PERINTAH DARI VPS
+// --- FUNGSI MENERIMA PERINTAH (OVERRIDE / FUZZY) ---
 void callback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Instruksi masuk [");
-  Serial.print(topic);
-  Serial.print("]: ");
-  
   StaticJsonDocument<256> doc;
   deserializeJson(doc, payload, length);
 
-  // Parsing Kontrol dari Server
   if (doc.containsKey("kipas_pwm")) {
     int pwmValue = doc["kipas_pwm"];
     analogWrite(PIN_KIPAS, pwmValue);
-    Serial.printf("Kipas -> %d | ", pwmValue);
   }
   
   if (doc.containsKey("mist_maker")) {
     const char* mistStatus = doc["mist_maker"];
-    digitalWrite(PIN_MIST, (strcmp(mistStatus, "ON") == 0) ? LOW : HIGH); // LOW aktif jika pakai Relay Module
-    Serial.printf("Mist -> %s | ", mistStatus);
+    digitalWrite(PIN_MIST, (strcmp(mistStatus, "ON") == 0) ? HIGH : LOW); 
   }
 
   if (doc.containsKey("heater")) {
     const char* heaterStatus = doc["heater"];
     digitalWrite(PIN_HEATER, (strcmp(heaterStatus, "ON") == 0) ? LOW : HIGH);
-    Serial.printf("Heater -> %s\n", heaterStatus);
   }
 }
 
 void reconnect() {
   while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
+    Serial.print("Connecting to MQTT...");
     if (client.connect(clientID)) {
-      Serial.println("Connected to VPS!");
-      client.subscribe(topic_control); // Dengerin perintah dari server
+      Serial.println(" Connected!");
+      client.subscribe(topic_control); 
     } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
+      Serial.println(" Failed. Retrying in 5s...");
       delay(5000);
     }
   }
@@ -80,21 +81,29 @@ void reconnect() {
 
 void setup() {
   Serial.begin(115200);
+  
+  // Inisialisasi Sensor
+  dht.begin();
+  mySerial.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
+  myMHZ19.begin(mySerial);
+  myMHZ19.autoCalibration(false); // Matikan Auto-Kalibrasi (penting untuk lingkungan tertutup)
+
+  // Inisialisasi WiFi & MQTT
   setup_wifi();
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
 
-  // Setup Pin Mode
+  // Inisialisasi Pin Aktuator
   pinMode(PIN_KIPAS, OUTPUT);
   pinMode(PIN_MIST, OUTPUT);
   pinMode(PIN_HEATER, OUTPUT);
-  pinMode(PIN_POMPA, OUTPUT);
 
-  // Matikan semua aktuator saat startup
-  digitalWrite(PIN_MIST, HIGH);
-  digitalWrite(PIN_HEATER, HIGH);
-  digitalWrite(PIN_POMPA, HIGH);
-  analogWrite(PIN_KIPAS, 0);
+  // Status Awal (Semua Mati)
+  analogWrite(PIN_KIPAS, 0);       
+  digitalWrite(PIN_MIST, LOW);     
+  digitalWrite(PIN_HEATER, HIGH);  
+
+  Serial.println("Sistem Siap! Memanaskan sensor (Butuh ~3 menit untuk CO2)...");
 }
 
 void loop() {
@@ -104,16 +113,25 @@ void loop() {
   client.loop();
 
   unsigned long now = millis();
-  // Kirim data sensor setiap 5 detik
+  // Kirim data setiap 5 detik (5000 ms)
   if (now - lastMsg > 5000) {
     lastMsg = now;
 
-    // SIMULASI PEMBACAAN SENSOR (Ganti dengan fungsi sensor asli Anda: dht.read dsb)
-    float suhu = 28.0 + (random(0, 100) / 10.0);
-    float hum  = 80.0 + (random(0, 100) / 10.0);
-    int co2    = 400 + random(0, 1000);
+    // --- PEMBACAAN SENSOR FISIK ---
+    float suhu = dht.readTemperature();
+    float hum  = dht.readHumidity();
+    int co2    = myMHZ19.getCO2();
 
-    // Bungkus ke JSON
+    // Cek apakah DHT22 error/kabel goyang
+    if (isnan(suhu) || isnan(hum)) {
+      Serial.println("Gagal membaca DHT22! Cek kabel.");
+      return; // Batal kirim data, tunggu 5 detik lagi
+    }
+
+    // --- CETAK KE SERIAL MONITOR ---
+    Serial.printf("Suhu: %.1f °C | Kel: %.1f %% | CO2: %d ppm\n", suhu, hum, co2);
+
+    // --- BUNGKUS KE JSON & KIRIM ---
     StaticJsonDocument<200> doc;
     doc["suhu"] = suhu;
     doc["kelembapan_udara"] = hum;
@@ -121,9 +139,6 @@ void loop() {
 
     char buffer[256];
     serializeJson(doc, buffer);
-
-    // Kirim ke VPS
     client.publish(topic_sensor, buffer);
-    Serial.println("Data Terkirim: " + String(buffer));
   }
 }
